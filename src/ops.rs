@@ -21,7 +21,11 @@ pub struct Folder {
     pub jail: Jail,
     /// A private, empty temporary folder for this session (commands' TMPDIR and download caches).
     pub temp: PathBuf,
+    /// Off until `enable_commands` has proven the sandbox on this computer.
     pub commands: Support,
+    /// What commands may reach, and the shell they run in.
+    pub fence: Fence,
+    prepared: bool,
     /// The program that locks a command down before running it: this one (`athena-connect __run`).
     pub helper: PathBuf,
     jobs: Mutex<HashMap<String, Arc<Job>>>,
@@ -48,7 +52,94 @@ impl Folder {
         let stamp = std::time::SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
         let temp = std::env::temp_dir().join(format!("athena-connect-{}-{stamp}", std::process::id()));
         std::fs::create_dir_all(&temp)?;
-        Ok(Folder { jail, temp, commands: sandbox::support(), helper: std::env::current_exe()?, jobs: Mutex::new(HashMap::new()), next_job: Mutex::new(1) })
+        let fence = Fence::for_folder(jail.root(), &temp);
+        Ok(Folder {
+            jail,
+            temp,
+            commands: Support::Unavailable("they haven't been checked yet".into()),
+            fence,
+            prepared: false,
+            helper: std::env::current_exe()?,
+            jobs: Mutex::new(HashMap::new()),
+            next_job: Mutex::new(1),
+        })
+    }
+
+    /// The shell commands run in.
+    pub fn shell(&self) -> &str {
+        self.fence.shell.as_deref().unwrap_or("sh")
+    }
+
+    /// Turn commands on, but only once this computer has shown they're confined: the sandbox is set up,
+    /// and a test command runs in it but can't read a file outside the folder. Otherwise they stay off, with the reason.
+    pub fn enable_commands(&mut self) {
+        self.commands = match self.prove_sandbox() {
+            Ok(()) => Support::Available,
+            Err(why) => Support::Unavailable(why),
+        };
+    }
+
+    fn prove_sandbox(&mut self) -> Result<(), String> {
+        if let Support::Unavailable(why) = sandbox::support() {
+            return Err(why);
+        }
+        sandbox::prepare(&self.fence)?;
+        self.prepared = true;
+        // A file outside the folder (and outside the session's temp folder) that the test command must not read.
+        let stamp = std::time::SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let secret = format!("athena-probe-secret-{stamp}");
+        let marker = [std::env::temp_dir(), dirs::config_dir().unwrap_or_default().join("athena-connect")]
+            .into_iter()
+            .map(|d| d.join(format!("athena-connect-probe-{stamp}.txt")))
+            .find(|m| !m.starts_with(self.jail.root()) && !m.starts_with(&self.temp) && m.parent().is_some_and(|p| std::fs::create_dir_all(p).is_ok()) && std::fs::write(m, &secret).is_ok());
+        let shells: Vec<String> = if cfg!(windows) { vec!["powershell".into(), "cmd".into()] } else { vec![self.shell().to_string()] };
+        let mut last = String::new();
+        let mut result = Err(String::new());
+        for shell in shells {
+            self.fence.shell = Some(shell.clone());
+            let out = self.probe(&probe_script(&shell, marker.as_deref()));
+            match out {
+                Ok(out) if out.contains(&secret) => {
+                    result = Err("a test command could read a file outside the folder, so they stay off".into());
+                    break;
+                }
+                Ok(out) if out.contains("athena-probe-ok") => {
+                    result = Ok(());
+                    break;
+                }
+                Ok(out) => last = format!("{shell}: {}", out.trim().lines().last().unwrap_or("no output")),
+                Err(e) => last = format!("{shell}: {e}"),
+            }
+        }
+        if let Some(m) = &marker {
+            let _ = std::fs::remove_file(m);
+        }
+        result.map_err(|e| if e.is_empty() { format!("a test command couldn't run in the sandbox ({last})") } else { e })
+    }
+
+    /// Run a test command in the sandbox and return what it printed.
+    fn probe(&self, script: &str) -> Result<String, String> {
+        let mut child = self.build_command(script)?.spawn().map_err(|e| e.to_string())?;
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let readers = capture(&mut child, &output);
+        let start = Instant::now();
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if start.elapsed() > Duration::from_secs(60) => {
+                    kill_tree(&mut child);
+                    let _ = child.wait();
+                    return Err("it didn't finish".into());
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+        for r in readers {
+            let _ = r.join();
+        }
+        let out = String::from_utf8_lossy(&output.lock().unwrap()).into_owned();
+        Ok(out)
     }
 
     fn path(&self, args: &Value, key: &str) -> Result<PathBuf, String> {
@@ -212,21 +303,31 @@ impl Folder {
         if let Support::Unavailable(why) = &self.commands {
             return err(format!("Commands are off on this computer: {why}"));
         }
-        let fence = Fence::for_folder(self.jail.root(), &self.temp);
+        self.build_command(command)
+    }
+
+    fn build_command(&self, command: &str) -> Result<Command, String> {
         let mut cmd = Command::new(&self.helper);
-        cmd.arg("__run").arg(serde_json::to_string(&fence).map_err(|e| e.to_string())?).arg(command);
+        cmd.arg("__run").arg(serde_json::to_string(&self.fence).map_err(|e| e.to_string())?).arg(command);
         cmd.current_dir(self.jail.root()).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
         cmd.env("TMPDIR", &self.temp).env("TMP", &self.temp).env("TEMP", &self.temp).env("PAGER", "cat").env("GIT_PAGER", "cat").env("TERM", "dumb");
         // Toolchain folders are read only: downloads (cargo, npm, pip) go to the private temp folder.
         cmd.env("CARGO_HOME", self.temp.join("cargo")).env("npm_config_cache", self.temp.join("npm")).env("PIP_CACHE_DIR", self.temp.join("pip"));
-        if let Some(home) = std::env::var_os("HOME") {
-            let home = PathBuf::from(home);
+        // Programs that keep settings in your user folder get private ones instead (Windows).
+        #[cfg(windows)]
+        for (var, dir) in [("APPDATA", "appdata"), ("LOCALAPPDATA", "localappdata")] {
+            let d = self.temp.join(dir);
+            let _ = std::fs::create_dir_all(&d);
+            cmd.env(var, d);
+        }
+        if let Some(home) = dirs::home_dir() {
             if home.join(".rustup").exists() {
                 cmd.env("RUSTUP_HOME", home.join(".rustup"));
             }
+            let cargo_bin = home.join(".cargo").join("bin");
             let mut path: Vec<PathBuf> = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect();
-            if home.join(".cargo/bin").exists() && !path.contains(&home.join(".cargo/bin")) {
-                path.push(home.join(".cargo/bin"));
+            if cargo_bin.exists() && !path.contains(&cargo_bin) {
+                path.push(cargo_bin);
             }
             if let Ok(p) = std::env::join_paths(path) {
                 cmd.env("PATH", p);
@@ -323,7 +424,22 @@ impl Folder {
                 let _ = c.wait();
             }
         }
+        if self.prepared {
+            sandbox::release(&self.fence);
+        }
         let _ = std::fs::remove_dir_all(&self.temp);
+    }
+}
+
+/// A test command: prints a word, and tries to print a file outside the folder.
+fn probe_script(shell: &str, marker: Option<&Path>) -> String {
+    let m = marker.map(|m| m.display().to_string());
+    match (shell, m) {
+        ("powershell", Some(m)) => format!("Write-Output athena-probe-ok; Get-Content -LiteralPath '{}' -ErrorAction SilentlyContinue", m.replace('\'', "''")),
+        ("cmd", Some(m)) => format!("echo athena-probe-ok & type \"{m}\""),
+        (_, Some(m)) => format!("echo athena-probe-ok; cat '{}'", m.replace('\'', "'\\''")),
+        ("powershell", None) => "Write-Output athena-probe-ok".into(),
+        _ => "echo athena-probe-ok".into(),
     }
 }
 

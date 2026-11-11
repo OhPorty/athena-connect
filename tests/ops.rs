@@ -13,6 +13,8 @@ fn setup() -> (tempfile::TempDir, PathBuf, Folder) {
     std::fs::write(base.path().join("secret.txt"), "outside").unwrap();
     let mut f = Folder::new(&folder).unwrap();
     f.helper = PathBuf::from(env!("CARGO_BIN_EXE_athena-connect"));
+    f.enable_commands();
+    assert_eq!(f.commands, athena_connect::sandbox::Support::Available, "the sandbox should prove itself here");
     (base, folder, f)
 }
 
@@ -80,4 +82,24 @@ fn commands_run_confined() {
     let temp = f.temp.clone();
     f.cleanup();
     assert!(!temp.exists());
+}
+
+#[test]
+fn commands_stay_off_when_the_sandbox_does_not_hold() {
+    let base = tempfile::tempdir().unwrap();
+    let folder = base.path().join("project");
+    std::fs::create_dir_all(&folder).unwrap();
+    // A stand-in helper that runs commands without any confinement: the check must catch it.
+    let fake = base.path().join("unconfined-helper");
+    std::fs::write(&fake, "#!/bin/sh\nexec /bin/sh -c \"$3\"\n").unwrap();
+    std::process::Command::new("chmod").arg("755").arg(&fake).status().unwrap();
+    let mut f = Folder::new(&folder).unwrap();
+    f.helper = fake;
+    f.enable_commands();
+    match &f.commands {
+        athena_connect::sandbox::Support::Unavailable(why) => assert!(why.contains("outside the folder"), "{why}"),
+        other => panic!("commands were turned on with a leaky sandbox: {other:?}"),
+    }
+    assert!(f.handle("exec", &json!({ "command": "echo hi" })).is_err());
+    f.cleanup();
 }

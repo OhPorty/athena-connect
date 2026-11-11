@@ -118,6 +118,7 @@ fn connect(cfg: &Config) -> Result<Socket, String> {
     let timeout = Some(Duration::from_millis(50));
     match socket.get_mut() {
         MaybeTlsStream::Plain(s) => s.set_read_timeout(timeout),
+        #[cfg(feature = "tls")]
         MaybeTlsStream::Rustls(s) => s.get_mut().set_read_timeout(timeout),
         _ => Ok(()),
     }
@@ -133,13 +134,17 @@ enum Out {
 /// `athena-connect [folder]`: give Athena access to this folder until the terminal closes.
 pub fn run(folder: &Path) -> Result<(), String> {
     let cfg = load_config().ok_or("This computer isn't paired with an Athena yet. Run: athena-connect login https://your-athena")?;
-    let folder = Arc::new(Folder::new(folder).map_err(|e| format!("Can't use {}: {e}", folder.display()))?);
+    let mut folder = Folder::new(folder).map_err(|e| format!("Can't use {}: {e}", folder.display()))?;
+    // The first time for a folder on Windows this also opens it (and your toolchains) to the sandbox, which can take a while for big ones.
+    println!("{DIM}Checking that commands can't reach outside {}…{RESET}", folder.jail.root().display());
+    folder.enable_commands();
+    let folder = Arc::new(folder);
     let root = folder.jail.root().display().to_string();
     let (commands, commands_off) = match &folder.commands {
         Support::Available => (true, None),
         Support::Unavailable(why) => (false, Some(why.clone())),
     };
-    let shell = if cfg!(windows) { "powershell" } else if Path::new("/bin/bash").exists() { "bash" } else { "sh" };
+    let shell = folder.shell().to_string();
 
     let mut socket = connect(&cfg)?;
     send(&mut socket, json!({ "type": "hello", "info": { "machine": machine_name(), "os": std::env::consts::OS, "shell": shell, "folder": root, "commands": commands, "commandsOff": commands_off, "version": env!("CARGO_PKG_VERSION") } }))?;

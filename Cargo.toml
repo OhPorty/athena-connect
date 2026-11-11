@@ -1,6 +1,6 @@
 [package]
 name = "athena-connect"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Gives an Athena server access to one folder on this computer, and nothing else."
 license = "MIT"
@@ -13,8 +13,8 @@ regex = "=1.13.1"
 ignore = "=0.4.33"
 globset = "=0.4.20"
 base64 = "=0.23.1"
-tungstenite = { version = "=0.30.0", features = ["rustls-tls-webpki-roots"] }
-ureq = { version = "=3.5.0", features = ["json"] }
+tungstenite = { version = "=0.30.0" }
+ureq = { version = "=3.5.0", default-features = false, features = ["json"] }
 rpassword = "=7.5.4"
 qrcode = { version = "=0.14.1", default-features = false }
 dirs = "=7.0.0"
@@ -22,6 +22,14 @@ ctrlc = { version = "=3.5.2", features = ["termination"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "=0.4.7"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Isolation", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Console", "Win32_System_SystemServices", "Win32_Storage_FileSystem"] }
+
+[features]
+default = ["tls"]
+# https to the Athena server. Off only for type-checking other systems without their C toolchain.
+tls = ["tungstenite/rustls-tls-webpki-roots", "ureq/rustls", "ureq/gzip"]
 
 [dev-dependencies]
 tempfile = "=3.27.0"

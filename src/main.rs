@@ -39,7 +39,7 @@ fn main() {
     }
 }
 
-/// `athena-connect __run <fence json> <command>`: apply the sandbox, then exec the shell.
+/// `athena-connect __run <fence json> <command>`: run the command inside the sandbox.
 fn run_helper(args: &[String]) -> i32 {
     let (Some(fence), Some(command)) = (args.first(), args.get(1)) else {
         eprintln!("athena-connect __run: missing arguments");
@@ -52,25 +52,5 @@ fn run_helper(args: &[String]) -> i32 {
             return 2;
         }
     };
-    if let Err(e) = sandbox::restrict_self(&fence) {
-        // Never run a command we couldn't confine.
-        eprintln!("athena-connect: refusing to run the command, because it couldn't be confined to the folder: {e}");
-        return 126;
-    }
-    exec_shell(command)
-}
-
-#[cfg(unix)]
-fn exec_shell(command: &str) -> i32 {
-    use std::os::unix::process::CommandExt;
-    let shell = if std::path::Path::new("/bin/bash").exists() { "/bin/bash" } else { "/bin/sh" };
-    let err = std::process::Command::new(shell).arg("-c").arg(command).exec();
-    eprintln!("athena-connect: couldn't start the shell: {err}");
-    127
-}
-
-#[cfg(not(unix))]
-fn exec_shell(_command: &str) -> i32 {
-    eprintln!("athena-connect: commands aren't supported on this system yet");
-    126
+    sandbox::run(&fence, command)
 }
