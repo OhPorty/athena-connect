@@ -86,7 +86,7 @@ impl Folder {
         if let Support::Unavailable(why) = sandbox::support() {
             return Err(why);
         }
-        sandbox::prepare(&self.fence)?;
+        sandbox::prepare(&mut self.fence)?;
         self.prepared = true;
         // A file outside the folder (and outside the session's temp folder) that the test command must not read.
         let stamp = std::time::SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);

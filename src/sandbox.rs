@@ -32,6 +32,10 @@ pub struct Fence {
     /// The shell commands run in ("bash", "sh", "powershell" or "cmd").
     #[serde(default)]
     pub shell: Option<String>,
+    /// Windows: a drive letter standing for the folder during the session (e.g. "Z:"), where commands start.
+    /// PowerShell checks the folders above where it starts, which the sandbox can't see; a drive's root has none.
+    #[serde(default)]
+    pub drive: Option<String>,
 }
 
 /// System folders programs need, read only.
@@ -45,14 +49,14 @@ impl Fence {
         let mut read_only: Vec<PathBuf> = SYSTEM_READ_ONLY.iter().map(PathBuf::from).filter(|p| p.exists()).collect();
         read_only.extend(toolchains());
         let shell = if Path::new("/bin/bash").exists() { "bash" } else { "sh" };
-        Fence { read_write: vec![folder.to_path_buf(), temp.to_path_buf(), PathBuf::from("/dev")], read_only, container: None, shell: Some(shell.into()) }
+        Fence { read_write: vec![folder.to_path_buf(), temp.to_path_buf(), PathBuf::from("/dev")], read_only, container: None, shell: Some(shell.into()), drive: None }
     }
 
     /// The fence for a folder: the folder and a private temp folder writable; toolchains readable
     /// (Windows' own folders are readable to every container already).
     #[cfg(windows)]
     pub fn for_folder(folder: &Path, temp: &Path) -> Fence {
-        Fence { read_write: vec![folder.to_path_buf(), temp.to_path_buf()], read_only: toolchains(), container: Some(imp::container_name(folder)), shell: Some("powershell".into()) }
+        Fence { read_write: vec![folder.to_path_buf(), temp.to_path_buf()], read_only: toolchains(), container: Some(imp::container_name(folder)), shell: Some("powershell".into()), drive: None }
     }
 }
 
@@ -86,7 +90,7 @@ pub fn support() -> Support {
 }
 
 /// Set up before the first command (Windows: the container and its access). Nothing to do on Linux.
-pub fn prepare(fence: &Fence) -> Result<(), String> {
+pub fn prepare(fence: &mut Fence) -> Result<(), String> {
     imp::prepare(fence)
 }
 
@@ -120,7 +124,7 @@ mod imp {
         }
     }
 
-    pub fn prepare(_fence: &Fence) -> Result<(), String> {
+    pub fn prepare(_fence: &mut Fence) -> Result<(), String> {
         Ok(())
     }
 
@@ -166,7 +170,7 @@ mod imp {
     pub fn support() -> Support {
         Support::Unavailable(NOT_YET.into())
     }
-    pub fn prepare(_fence: &Fence) -> Result<(), String> {
+    pub fn prepare(_fence: &mut Fence) -> Result<(), String> {
         Err(NOT_YET.into())
     }
     pub fn release(_fence: &Fence) {}

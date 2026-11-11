@@ -31,7 +31,7 @@ use windows_sys::Win32::Security::{
     DeriveCapabilitySidsFromName, EqualSid, FreeSid, GetAce, GetAclInformation, GetSecurityDescriptorControl, GetSecurityDescriptorSacl, LABEL_SECURITY_INFORMATION, AclSizeInformation, ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, DACL_SECURITY_INFORMATION, INHERITED_ACE, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_CAPABILITIES, SE_DACL_PROTECTED, SID_AND_ATTRIBUTES,
     SUB_CONTAINERS_AND_OBJECTS_INHERIT,
 };
-use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetVolumeInformationW, GetVolumePathNameW};
+use windows_sys::Win32::Storage::FileSystem::{DefineDosDeviceW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW, GetVolumePathNameW, DDD_REMOVE_DEFINITION};
 use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
 use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE};
 use windows_sys::Win32::System::SystemServices::{ACCESS_ALLOWED_ACE_TYPE, FILE_PERSISTENT_ACLS, SE_GROUP_ENABLED, SYSTEM_MANDATORY_LABEL_ACE_TYPE};
@@ -82,9 +82,11 @@ pub fn toolchains() -> Vec<PathBuf> {
 
 /// Before the first command: check the folder's drive can enforce permissions, create the
 /// container, and open the folder, the temp folder and toolchains to it.
-pub fn prepare(fence: &Fence) -> Result<(), String> {
-    let folder = fence.read_write.first().ok_or("no folder")?;
-    let name = fence.container.as_deref().ok_or("no container")?;
+pub fn prepare(fence: &mut Fence) -> Result<(), String> {
+    let folder = fence.read_write.first().ok_or("no folder")?.clone();
+    let folder = folder.as_path();
+    let name = fence.container.clone().ok_or("no container")?;
+    let name = name.as_str();
     unsafe {
         check_volume(folder)?;
         let sid = create_container(name)?;
@@ -97,14 +99,32 @@ pub fn prepare(fence: &Fence) -> Result<(), String> {
             // A toolchain folder we can't change (installed by an administrator) just stays unreadable to commands.
             let _ = grant(p, tools.0, READ_RUN);
         }
+        // A drive letter for the folder (unless it's a drive's root already), where commands start.
+        if folder.parent().is_some() {
+            fence.drive = Some(map_drive(folder)?);
+        }
     }
     Ok(())
 }
 
+/// Give the folder a free drive letter for the session, like `subst`.
+unsafe fn map_drive(folder: &Path) -> Result<String, String> {
+    let used = GetLogicalDrives();
+    let letter = (b'D'..=b'Z').rev().find(|l| used & (1 << (l - b'A')) == 0).ok_or("there's no free drive letter for the folder")?;
+    let drive = format!("{}:", letter as char);
+    if DefineDosDeviceW(0, wide(&drive).as_ptr(), wide(folder).as_ptr()) == 0 {
+        return Err(last_error("giving the folder a drive letter"));
+    }
+    Ok(drive)
+}
+
 /// When the session ends: remove the container's profile (its own storage). The temp folder goes with the session.
 pub fn release(fence: &Fence) {
-    if let Some(name) = &fence.container {
-        unsafe {
+    unsafe {
+        if let Some(drive) = &fence.drive {
+            DefineDosDeviceW(DDD_REMOVE_DEFINITION, wide(drive).as_ptr(), null());
+        }
+        if let Some(name) = &fence.container {
             DeleteAppContainerProfile(wide(name).as_ptr());
         }
     }
@@ -134,7 +154,7 @@ fn command_line(shell: &str, command: &str, folder: &Path, temp: Option<&Path>) 
     let script = temp.join(format!("command-{}-{stamp}.ps1", std::process::id()));
     // Native programs' exit codes come back; UTF-8 with a BOM, which Windows PowerShell needs to read it as UTF-8.
     // Its core modules are loaded up front: loading them on first use doesn't happen in a container.
-    // It starts in the folder by its full path: on its own it checks the folders above, can't see them, and starts in C:\.
+    // It starts in the folder's drive (see Fence::drive): anywhere else it checks the folders above, can't see them, and starts in C:\.
     // The exit code is a failure if anything in the command failed, not only the last part.
     let folder = folder.display().to_string().replace('\'', "''");
     let body = format!(
@@ -205,14 +225,16 @@ unsafe fn run_confined(fence: &Fence, command: &str) -> Result<i32, String> {
         return Err(last_error("the job's limits"));
     }
 
-    let (line, script) = command_line(fence.shell.as_deref().unwrap_or("powershell"), command, folder, fence.read_write.get(1).map(|p| p.as_path()))?;
+    // Start in the folder's drive letter when it has one (see Fence::drive).
+    let start: PathBuf = fence.drive.as_ref().map(|d| PathBuf::from(format!("{d}\\"))).unwrap_or_else(|| folder.clone());
+    let (line, script) = command_line(fence.shell.as_deref().unwrap_or("powershell"), command, &start, fence.read_write.get(1).map(|p| p.as_path()))?;
     let _script = Guard(|| {
         if let Some(s) = &script {
             let _ = std::fs::remove_file(s);
         }
     });
     let mut line = wide(line);
-    let cwd = wide(folder);
+    let cwd = wide(&start);
     let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
     if CreateProcessW(null(), line.as_mut_ptr(), null(), null(), 1, EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED, null(), cwd.as_ptr(), &si.StartupInfo, &mut pi) == 0 {
         return Err(last_error("starting the shell in the sandbox"));
