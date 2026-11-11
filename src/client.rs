@@ -132,7 +132,8 @@ enum Out {
 }
 
 /// `athena-connect [folder]`: give Athena access to this folder until the terminal closes.
-pub fn run(folder: &Path) -> Result<(), String> {
+/// `fresh`: a new conversation, instead of continuing the latest one in this folder.
+pub fn run(folder: &Path, fresh: bool) -> Result<(), String> {
     let cfg = load_config().ok_or("This computer isn't paired with an Athena yet. Run: athena-connect login https://your-athena")?;
     let mut folder = Folder::new(folder).map_err(|e| format!("Can't use {}: {e}", folder.display()))?;
     // The first time for a folder on Windows this also opens it (and your toolchains) to the sandbox, which can take a while for big ones.
@@ -147,7 +148,7 @@ pub fn run(folder: &Path) -> Result<(), String> {
     let shell = folder.shell().to_string();
 
     let mut socket = connect(&cfg)?;
-    send(&mut socket, json!({ "type": "hello", "info": { "machine": machine_name(), "os": std::env::consts::OS, "shell": shell, "folder": root, "commands": commands, "commandsOff": commands_off, "version": env!("CARGO_PKG_VERSION") } }))?;
+    send(&mut socket, json!({ "type": "hello", "info": { "machine": machine_name(), "os": std::env::consts::OS, "shell": shell, "folder": root, "commands": commands, "commandsOff": commands_off, "version": env!("CARGO_PKG_VERSION") }, "fresh": fresh }))?;
 
     println!("{TEAL}{BOLD}Athena has access to {root}{RESET}");
     println!("{DIM}Only this folder: anything outside it is refused here, on this computer.{RESET}");
@@ -251,6 +252,10 @@ struct View {
 impl View {
     fn ready(&mut self, session: &Value) {
         let url = session["url"].as_str().unwrap_or("");
+        if session["resumed"].as_bool() == Some(true) {
+            let title = session["title"].as_str().filter(|t| !t.is_empty()).unwrap_or("your last conversation here");
+            println!("\n{TEAL}Continuing \"{title}\"{RESET}{DIM} (from {}). For a new conversation: athena-connect --new{RESET}", when(session["lastActive"].as_f64()));
+        }
         println!("\nOpen it on your phone or another computer:\n{BOLD}{url}{RESET}");
         if let Ok(code) = qrcode::QrCode::new(url.as_bytes()) {
             println!("{}", code.render::<qrcode::render::unicode::Dense1x2>().quiet_zone(true).build());
@@ -354,5 +359,18 @@ impl View {
             return None;
         }
         Some(json!({ "type": "prompt", "text": line }))
+    }
+}
+
+/// When a conversation was last active, in words.
+fn when(ms: Option<f64>) -> String {
+    let Some(ms) = ms else { return "earlier".into() };
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as f64).unwrap_or(ms);
+    let mins = ((now - ms) / 60_000.0).max(0.0) as u64;
+    match mins {
+        0 => "just now".into(),
+        1..=59 => format!("{mins} min ago"),
+        60..=1439 => format!("{} h ago", mins / 60),
+        _ => format!("{} days ago", mins / 1440),
     }
 }

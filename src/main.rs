@@ -6,7 +6,9 @@ use athena_connect::{client, sandbox};
 const HELP: &str = "athena-connect: give your Athena access to one folder on this computer, and nothing else.
 
   athena-connect login <address>   pair this computer with your Athena (once), e.g. https://athena.example.com
-  athena-connect [folder]          give Athena access to this folder (default: the current one) until you close the terminal
+  athena-connect [folder]          give Athena access to this folder (default: the current one) until you close the terminal;
+                                   continues your latest conversation in that folder
+  athena-connect --new [folder]    the same, in a new conversation
   athena-connect logout            forget this computer's key
 ";
 
@@ -30,8 +32,12 @@ fn main() {
             None => Err("Give your Athena's address: athena-connect login https://athena.example.com".into()),
         },
         Some("logout") => std::fs::remove_file(client::config_file()).map(|_| println!("This computer's key is forgotten. (Remove it in Athena's settings too.)")).map_err(|_| "This computer wasn't paired.".into()),
-        Some(folder) => client::run(std::path::Path::new(folder)),
-        None => client::run(&std::env::current_dir().unwrap_or_else(|_| ".".into())),
+        Some("--new" | "-n") => match args.get(2) {
+            Some(folder) => client::run(std::path::Path::new(folder), true),
+            None => client::run(&std::env::current_dir().unwrap_or_else(|_| ".".into()), true),
+        },
+        Some(folder) => client::run(std::path::Path::new(folder), args.get(2).map(String::as_str) == Some("--new")),
+        None => client::run(&std::env::current_dir().unwrap_or_else(|_| ".".into()), false),
     };
     if let Err(e) = result {
         eprintln!("athena-connect: {e}");

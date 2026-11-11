@@ -7,7 +7,7 @@ cd ~/projects/my-app
 athena-connect
 ```
 
-It prints a link and a QR code. Open it on your phone or any computer, and you're in a conversation where Athena works in `~/projects/my-app`. You can type here too. Close the terminal (or press Ctrl+C) and Athena's access ends.
+It prints a link and a QR code. Running it again in the same folder continues your latest conversation there (`athena-connect --new` starts a new one). Open it on your phone or any computer, and you're in a conversation where Athena works in `~/projects/my-app`. You can type here too. Close the terminal (or press Ctrl+C) and Athena's access ends.
 
 ## Install
 
@@ -29,7 +29,8 @@ Both download the latest release, check it against the release's `SHA256SUMS`, a
 
 ```
 athena-connect login https://your-athena   # once per computer: your username, password and authenticator code
-athena-connect [folder]                    # give Athena that folder (default: the one you're in)
+athena-connect [folder]                    # give Athena that folder (default: the one you're in), continuing your latest conversation there
+athena-connect --new [folder]              # the same, in a new conversation
 athena-connect logout                      # forget this computer's key
 ```
 
