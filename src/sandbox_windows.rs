@@ -4,7 +4,10 @@
 //! you isn't enough, and neither is "Everyone". So the connector grants:
 //!
 //! - the folder and the session's temp folder: full access, to this folder's
-//!   own container (one per folder, so one folder's container can't open another);
+//!   own container (one per folder, so one folder's container can't open another),
+//!   and a low integrity label: containers run at low integrity, and Windows
+//!   doesn't let those write to anything labelled higher, whatever the
+//!   permissions say (the same label Windows gives AppData\LocalLow);
 //! - your toolchains (Rust, Node, Python... under your user folder): read and
 //!   run, to a capability every container gets.
 //!
@@ -23,16 +26,16 @@ use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, LocalFree, SetHandleInformation, ERROR_SUCCESS, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE};
-use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, GRANT_ACCESS, NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W};
+use windows_sys::Win32::Security::Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, ConvertStringSidToSidW, SDDL_REVISION_1, GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, GRANT_ACCESS, NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W};
 use windows_sys::Win32::Security::Isolation::{CreateAppContainerProfile, DeleteAppContainerProfile, DeriveAppContainerSidFromAppContainerName};
 use windows_sys::Win32::Security::{
-    DeriveCapabilitySidsFromName, EqualSid, FreeSid, GetAce, GetAclInformation, GetSecurityDescriptorControl, AclSizeInformation, ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, DACL_SECURITY_INFORMATION, INHERITED_ACE, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_CAPABILITIES, SE_DACL_PROTECTED, SID_AND_ATTRIBUTES,
+    DeriveCapabilitySidsFromName, EqualSid, FreeSid, GetAce, GetAclInformation, GetSecurityDescriptorControl, GetSecurityDescriptorSacl, LABEL_SECURITY_INFORMATION, AclSizeInformation, ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, DACL_SECURITY_INFORMATION, INHERITED_ACE, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_CAPABILITIES, SE_DACL_PROTECTED, SID_AND_ATTRIBUTES,
     SUB_CONTAINERS_AND_OBJECTS_INHERIT,
 };
 use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetVolumeInformationW, GetVolumePathNameW};
 use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
 use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE};
-use windows_sys::Win32::System::SystemServices::{ACCESS_ALLOWED_ACE_TYPE, FILE_PERSISTENT_ACLS, SE_GROUP_ENABLED};
+use windows_sys::Win32::System::SystemServices::{ACCESS_ALLOWED_ACE_TYPE, FILE_PERSISTENT_ACLS, SE_GROUP_ENABLED, SYSTEM_MANDATORY_LABEL_ACE_TYPE};
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess, InitializeProcThreadAttributeList, ResumeThread, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject, CREATE_SUSPENDED, EXTENDED_STARTUPINFO_PRESENT, INFINITE, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
     PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, STARTF_USESTDHANDLES, STARTUPINFOEXW,
@@ -88,6 +91,7 @@ pub fn prepare(fence: &Fence) -> Result<(), String> {
         let sid = create_container(name)?;
         for p in &fence.read_write {
             grant(p, sid.0, FULL).map_err(|e| format!("couldn't open {} to the sandbox: {e}", p.display()))?;
+            label_low(p).map_err(|e| format!("couldn't let the sandbox write in {}: {e}", p.display()))?;
         }
         let tools = capability(TOOLS)?;
         for p in &fence.read_only {
@@ -352,6 +356,67 @@ unsafe fn grant(path: &Path, sid: PSID, access: u32) -> Result<(), String> {
         return Err(format!("changing its permissions failed (Windows error {e})"));
     }
     Ok(())
+}
+
+/// Label a folder and everything in it low integrity, so a container may write there (unless it already is).
+unsafe fn label_low(path: &Path) -> Result<(), String> {
+    let p = wide(path);
+    let mut sacl: *mut ACL = null_mut();
+    let mut sd: PSECURITY_DESCRIPTOR = null_mut();
+    if GetNamedSecurityInfoW(p.as_ptr(), SE_FILE_OBJECT, LABEL_SECURITY_INFORMATION, null_mut(), null_mut(), null_mut(), &mut sacl, &mut sd) == ERROR_SUCCESS {
+        let low = has_low_label(sacl);
+        LocalFree(sd);
+        if low {
+            return Ok(());
+        }
+    }
+    // Low, inherited by everything inside, and only stopping writes from below low (nothing is below it).
+    let mut label: PSECURITY_DESCRIPTOR = null_mut();
+    if ConvertStringSecurityDescriptorToSecurityDescriptorW(wide("S:(ML;OICI;NW;;;LW)").as_ptr(), SDDL_REVISION_1, &mut label, null_mut()) == 0 {
+        return Err(last_error("building the label"));
+    }
+    let _label = Guard(|| {
+        LocalFree(label);
+    });
+    let (mut present, mut defaulted, mut new_sacl) = (0, 0, null_mut::<ACL>());
+    if GetSecurityDescriptorSacl(label, &mut present, &mut new_sacl, &mut defaulted) == 0 || present == 0 {
+        return Err(last_error("reading the label"));
+    }
+    let e = SetNamedSecurityInfoW(p.as_ptr(), SE_FILE_OBJECT, LABEL_SECURITY_INFORMATION, null_mut(), null_mut(), null(), new_sacl);
+    if e != ERROR_SUCCESS {
+        return Err(format!("setting its integrity label failed (Windows error {e})"));
+    }
+    Ok(())
+}
+
+unsafe fn has_low_label(sacl: *mut ACL) -> bool {
+    if sacl.is_null() {
+        return false;
+    }
+    let mut low: PSID = null_mut();
+    if ConvertStringSidToSidW(wide("S-1-16-4096").as_ptr(), &mut low) == 0 {
+        return false;
+    }
+    let _low = Guard(|| {
+        LocalFree(low);
+    });
+    let mut info: ACL_SIZE_INFORMATION = std::mem::zeroed();
+    if GetAclInformation(sacl, &mut info as *mut _ as *mut c_void, std::mem::size_of::<ACL_SIZE_INFORMATION>() as u32, AclSizeInformation) == 0 {
+        return false;
+    }
+    for i in 0..info.AceCount {
+        let mut ace: *mut c_void = null_mut();
+        if GetAce(sacl, i, &mut ace) == 0 {
+            continue;
+        }
+        // A label ACE has the same layout as an allowed ACE: header, mask, SID.
+        let a = ace as *const ACCESS_ALLOWED_ACE;
+        let flags = (*a).Header.AceFlags as u32;
+        if (*a).Header.AceType as u32 == SYSTEM_MANDATORY_LABEL_ACE_TYPE && flags & INHERITED_ACE == 0 && flags & SUB_CONTAINERS_AND_OBJECTS_INHERIT == SUB_CONTAINERS_AND_OBJECTS_INHERIT && EqualSid(&(*a).SidStart as *const u32 as PSID, low) != 0 {
+            return true;
+        }
+    }
+    false
 }
 
 unsafe fn has_grant(dacl: *mut ACL, sid: PSID, access: u32) -> bool {

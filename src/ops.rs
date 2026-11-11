@@ -431,15 +431,19 @@ impl Folder {
     }
 }
 
-/// A test command: prints a word, and tries to print a file outside the folder.
+/// A test command: writes a word to a file in its temp folder and prints it back (so it can work), and tries to
+/// print a file outside the folder (which must fail). The word is put together as it runs, so an error message
+/// that repeats the command can't pass for it.
 fn probe_script(shell: &str, marker: Option<&Path>) -> String {
     let m = marker.map(|m| m.display().to_string());
-    match (shell, m) {
-        ("powershell", Some(m)) => format!("Write-Output athena-probe-ok; Get-Content -LiteralPath '{}' -ErrorAction SilentlyContinue", m.replace('\'', "''")),
-        ("cmd", Some(m)) => format!("echo athena-probe-ok & type \"{m}\""),
-        (_, Some(m)) => format!("echo athena-probe-ok; cat '{}'", m.replace('\'', "'\\''")),
-        ("powershell", None) => "Write-Output athena-probe-ok".into(),
-        _ => "echo athena-probe-ok".into(),
+    let outside = |m: &Option<String>, f: &dyn Fn(&str) -> String| m.as_deref().map(f).unwrap_or_default();
+    match shell {
+        "powershell" => format!(
+            "Set-Content -LiteralPath (Join-Path $env:TEMP 'probe.txt') -Value ('athena-probe-' + 'ok'); Get-Content -LiteralPath (Join-Path $env:TEMP 'probe.txt'){}",
+            outside(&m, &|m| format!("; Get-Content -LiteralPath '{}' -ErrorAction SilentlyContinue", m.replace('\'', "''")))
+        ),
+        "cmd" => format!("echo athena-probe-^ok> \"%TEMP%\\probe.txt\" & type \"%TEMP%\\probe.txt\"{}", outside(&m, &|m| format!(" & type \"{m}\""))),
+        _ => format!("p=athena-probe-; echo \"${{p}}ok\" > \"$TMPDIR/probe.txt\" && cat \"$TMPDIR/probe.txt\"{}", outside(&m, &|m| format!("; cat '{}'", m.replace('\'', "'\\''")))),
     }
 }
 

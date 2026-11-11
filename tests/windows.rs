@@ -27,9 +27,12 @@ fn commands_run_in_the_folder_and_nowhere_else() {
 
     // Inside: normal work, including the private temp folder.
     let out = run(if ps { "Set-Content -Path made.txt -Value hello; Get-Content made.txt; Set-Content -Path \"$env:TEMP\\t.txt\" -Value scratch; Get-Content \"$env:TEMP\\t.txt\"".into() } else { "echo hello> made.txt & type made.txt & echo scratch> \"%TEMP%\\t.txt\" & type \"%TEMP%\\t.txt\"".into() });
-    let text = out["output"].as_str().unwrap();
-    assert!(text.contains("hello") && text.contains("scratch"), "{out}");
-    assert!(folder.join("made.txt").exists());
+    assert_eq!(out["code"], 0, "{out}");
+    assert_eq!(std::fs::read_to_string(folder.join("made.txt")).unwrap().trim(), "hello", "{out}");
+    // Folders made inside are writable too (they inherit the folder's access and label).
+    let out = run(if ps { "New-Item -ItemType Directory -Path a\\b | Out-Null; Set-Content -Path a\\b\\c.txt -Value deep".into() } else { "mkdir a\\b & echo deep> a\\b\\c.txt".into() });
+    assert_eq!(out["code"], 0, "{out}");
+    assert_eq!(std::fs::read_to_string(folder.join("a").join("b").join("c.txt")).unwrap().trim(), "deep", "{out}");
 
     // Outside: reading, changing, deleting and listing are all refused.
     let s = secret.display();
