@@ -24,8 +24,8 @@ use std::ffi::{c_void, OsStr};
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
-use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, LocalFree, SetHandleInformation, ERROR_SUCCESS, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE};
-use windows_sys::Win32::Security::Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, ConvertStringSidToSidW, SDDL_REVISION_1, GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, GRANT_ACCESS, NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W};
+use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, LocalFree, SetHandleInformation, ERROR_ACCESS_DENIED, ERROR_SUCCESS, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::Security::Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, ConvertStringSidToSidW, SDDL_REVISION_1, GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, GRANT_ACCESS, NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, TRUSTEE_IS_NAME, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W};
 use windows_sys::Win32::Security::Isolation::{CreateAppContainerProfile, DeleteAppContainerProfile, DeriveAppContainerSidFromAppContainerName};
 use windows_sys::Win32::Security::{
     DeriveCapabilitySidsFromName, EqualSid, FreeSid, GetAce, GetAclInformation, GetSecurityDescriptorControl, GetSecurityDescriptorSacl, LABEL_SECURITY_INFORMATION, AclSizeInformation, ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, DACL_SECURITY_INFORMATION, INHERITED_ACE, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_CAPABILITIES, SE_DACL_PROTECTED, SID_AND_ATTRIBUTES,
@@ -420,9 +420,57 @@ unsafe fn label_low(path: &Path) -> Result<(), String> {
     if GetSecurityDescriptorSacl(label, &mut present, &mut new_sacl, &mut defaulted) == 0 || present == 0 {
         return Err(last_error("reading the label"));
     }
-    let e = SetNamedSecurityInfoW(p.as_ptr(), SE_FILE_OBJECT, LABEL_SECURITY_INFORMATION, null_mut(), null_mut(), null(), new_sacl);
+    let mut e = SetNamedSecurityInfoW(p.as_ptr(), SE_FILE_OBJECT, LABEL_SECURITY_INFORMATION, null_mut(), null_mut(), null(), new_sacl);
+    if e == ERROR_ACCESS_DENIED {
+        // Changing a label takes the "take ownership" right, which a folder's owner may not have yet but can always
+        // give themselves (owners can change permissions). Give it to you, on this folder and what's inside, and retry.
+        allow_relabel(path)?;
+        e = SetNamedSecurityInfoW(p.as_ptr(), SE_FILE_OBJECT, LABEL_SECURITY_INFORMATION, null_mut(), null_mut(), null(), new_sacl);
+    }
     if e != ERROR_SUCCESS {
         return Err(format!("setting its integrity label failed (Windows error {e})"));
+    }
+    Ok(())
+}
+
+/// Give the person running the connector the "take ownership" right on a folder and everything in it.
+unsafe fn allow_relabel(path: &Path) -> Result<(), String> {
+    const WRITE_OWNER: u32 = 0x0008_0000;
+    let p = wide(path);
+    let mut dacl: *mut ACL = null_mut();
+    let mut sd: PSECURITY_DESCRIPTOR = null_mut();
+    let e = GetNamedSecurityInfoW(p.as_ptr(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, null_mut(), null_mut(), &mut dacl, null_mut(), &mut sd);
+    if e != ERROR_SUCCESS {
+        return Err(format!("reading its permissions failed (Windows error {e})"));
+    }
+    let _sd = Guard(|| {
+        LocalFree(sd);
+    });
+    let mut control = 0u16;
+    let mut revision = 0u32;
+    GetSecurityDescriptorControl(sd, &mut control, &mut revision);
+    let mut me = wide("CURRENT_USER");
+    let ea = EXPLICIT_ACCESS_W {
+        grfAccessPermissions: WRITE_OWNER,
+        grfAccessMode: GRANT_ACCESS,
+        grfInheritance: SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+        Trustee: TRUSTEE_W { pMultipleTrustee: null_mut(), MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE, TrusteeForm: TRUSTEE_IS_NAME, TrusteeType: TRUSTEE_IS_UNKNOWN, ptstrName: me.as_mut_ptr() },
+    };
+    let mut new: *mut ACL = null_mut();
+    let e = SetEntriesInAclW(1, &ea, dacl, &mut new);
+    if e != ERROR_SUCCESS {
+        return Err(format!("building its permissions failed (Windows error {e})"));
+    }
+    let _new = Guard(|| {
+        LocalFree(new as *mut c_void);
+    });
+    let mut info = DACL_SECURITY_INFORMATION;
+    if control & SE_DACL_PROTECTED != 0 {
+        info |= PROTECTED_DACL_SECURITY_INFORMATION;
+    }
+    let e = SetNamedSecurityInfoW(p.as_ptr(), SE_FILE_OBJECT, info, null_mut(), null_mut(), new, null());
+    if e != ERROR_SUCCESS {
+        return Err(format!("you don't have permission to change this folder's permissions (Windows error {e}); if an administrator created it, run athena-connect once from an administrator terminal, or use a folder you created"));
     }
     Ok(())
 }
