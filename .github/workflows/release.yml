@@ -47,7 +47,7 @@ jobs:
         shell: bash
         run: |
           [ -f test-output.txt ] || exit 0
-          msg=$( (sed -n '/^failures:/,$p' test-output.txt; grep -E "^error|panicked" test-output.txt || true) | head -120 | sed 's/%/%25/g; s/\r//g' | awk '{printf "%s%%0A", $0}')
+          msg=$( (sed -n '/^failures:/,$p' test-output.txt; grep -E -A6 "panicked" test-output.txt || true) | head -120 | sed 's/%/%25/g; s/\r//g' | awk '{printf "%s%%0A", $0}')
           echo "::error title=Test failures::${msg:0:60000}"
 
   build:

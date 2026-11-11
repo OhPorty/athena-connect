@@ -54,7 +54,13 @@ try { "after import, Join-Path: " + (Join-Path 'a' 'b') } catch { "still no Join
     let out = run(if ps { "Set-Content -Path made.txt -Value hello; Set-Content -Path (Join-Path $env:TEMP t.txt) -Value ('scr' + 'atch'); Get-Content (Join-Path $env:TEMP t.txt)".into() } else { "echo hello> made.txt & echo scr^atch> \"%TEMP%\\t.txt\" & type \"%TEMP%\\t.txt\"".into() });
     assert!(out["output"].as_str().unwrap().contains("scratch"), "the temp folder should be writable: {out}");
     assert_eq!(out["code"], 0, "{out}");
-    assert_eq!(std::fs::read_to_string(folder.join("made.txt")).unwrap().trim(), "hello", "{out}");
+    let made = std::fs::read_to_string(folder.join("made.txt"));
+    if made.is_err() {
+        // Where did it go? Ask from inside, and look from outside.
+        let seen = run(if ps { "'location: ' + (Get-Location).Path; 'files: ' + ((Get-ChildItem -Force -Name) -join ', '); 'made: ' + (Resolve-Path made.txt -ErrorAction SilentlyContinue)".into() } else { "cd & dir /b".into() });
+        println!("check that didn't pass: made.txt: {made:?} | first command: {} | inside: {} | outside sees: {:?} | folder: {}", out["output"].as_str().unwrap_or("").replace(['\r', '\n'], " "), seen["output"].as_str().unwrap_or("").replace(['\r', '\n'], " "), std::fs::read_dir(&folder).map(|d| d.filter_map(|e| e.ok()).map(|e| e.file_name()).collect::<Vec<_>>()), folder.display());
+    }
+    assert_eq!(made.unwrap().trim(), "hello", "{out}");
     // Folders made inside are writable too (they inherit the folder's access and label).
     let out = run(if ps { "New-Item -ItemType Directory -Path a\\b | Out-Null; Set-Content -Path a\\b\\c.txt -Value deep".into() } else { "mkdir a\\b & echo deep> a\\b\\c.txt".into() });
     assert_eq!(out["code"], 0, "{out}");
