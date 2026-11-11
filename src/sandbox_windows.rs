@@ -124,7 +124,7 @@ pub fn run(fence: &Fence, command: &str) -> i32 {
 
 /// The shell's command line for a command. PowerShell runs it from a script file in the session's temp folder
 /// (returned, to remove afterwards): that gives plain-text errors (an encoded command reports them as XML).
-fn command_line(shell: &str, command: &str, temp: Option<&Path>) -> Result<(String, Option<PathBuf>), String> {
+fn command_line(shell: &str, command: &str, folder: &Path, temp: Option<&Path>) -> Result<(String, Option<PathBuf>), String> {
     let system = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
     if shell == "cmd" {
         return Ok((format!("\"{system}\\System32\\cmd.exe\" /d /s /c \"{command}\""), None));
@@ -134,7 +134,12 @@ fn command_line(shell: &str, command: &str, temp: Option<&Path>) -> Result<(Stri
     let script = temp.join(format!("command-{}-{stamp}.ps1", std::process::id()));
     // Native programs' exit codes come back; UTF-8 with a BOM, which Windows PowerShell needs to read it as UTF-8.
     // Its core modules are loaded up front: loading them on first use doesn't happen in a container.
-    let body = format!("$ProgressPreference='SilentlyContinue'\r\nImport-Module Microsoft.PowerShell.Management, Microsoft.PowerShell.Utility, Microsoft.PowerShell.Security -ErrorAction SilentlyContinue\r\ntry {{ [Console]::OutputEncoding=[Text.Encoding]::UTF8 }} catch {{}}\r\n{command}\r\nif (-not $?) {{ if ($LASTEXITCODE) {{ exit $LASTEXITCODE }} else {{ exit 1 }} }}\r\nif ($LASTEXITCODE) {{ exit $LASTEXITCODE }}\r\n");
+    // It starts in the folder by its full path: on its own it checks the folders above, can't see them, and starts in C:\.
+    // The exit code is a failure if anything in the command failed, not only the last part.
+    let folder = folder.display().to_string().replace('\'', "''");
+    let body = format!(
+        "$ProgressPreference='SilentlyContinue'\r\nImport-Module Microsoft.PowerShell.Management, Microsoft.PowerShell.Utility, Microsoft.PowerShell.Security -ErrorAction SilentlyContinue\r\ntry {{ [Console]::OutputEncoding=[Text.Encoding]::UTF8 }} catch {{}}\r\nSet-Location -LiteralPath '{folder}'\r\n$Error.Clear()\r\n$LASTEXITCODE = 0\r\n{command}\r\nif ($LASTEXITCODE) {{ exit $LASTEXITCODE }}\r\nif (-not $? -or $Error.Count) {{ exit 1 }}\r\n"
+    );
     let mut bytes = vec![0xEF, 0xBB, 0xBF];
     bytes.extend_from_slice(body.as_bytes());
     std::fs::write(&script, bytes).map_err(|e| format!("couldn't write the command's script: {e}"))?;
@@ -200,7 +205,7 @@ unsafe fn run_confined(fence: &Fence, command: &str) -> Result<i32, String> {
         return Err(last_error("the job's limits"));
     }
 
-    let (line, script) = command_line(fence.shell.as_deref().unwrap_or("powershell"), command, fence.read_write.get(1).map(|p| p.as_path()))?;
+    let (line, script) = command_line(fence.shell.as_deref().unwrap_or("powershell"), command, folder, fence.read_write.get(1).map(|p| p.as_path()))?;
     let _script = Guard(|| {
         if let Some(s) = &script {
             let _ = std::fs::remove_file(s);
