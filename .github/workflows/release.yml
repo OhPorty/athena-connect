@@ -24,7 +24,19 @@ jobs:
           components: clippy
       - run: cargo clippy --all-targets --locked -- -D warnings
       # On Linux this includes the confinement tests: they need Landlock (Linux 6.2+) and fail rather than skip without it.
-      - run: cargo test --locked
+      - name: cargo test
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked 2>&1 | tee test-output.txt
+      # Logs are only visible to the repo's owner; a failure note on the run is visible to anyone.
+      - name: report failures
+        if: failure()
+        shell: bash
+        run: |
+          [ -f test-output.txt ] || exit 0
+          msg=$( (sed -n '/^failures:/,$p' test-output.txt; grep -E "^error|panicked" test-output.txt) | head -120 | sed 's/%/%25/g; s/\r//g' | awk '{printf "%s%%0A", $0}')
+          echo "::error title=Test failures::${msg:0:60000}"
 
   build:
     if: startsWith(github.ref, 'refs/tags/v')
