@@ -13,6 +13,12 @@ regex = "=1.13.1"
 ignore = "=0.4.33"
 globset = "=0.4.20"
 base64 = "=0.23.1"
+tungstenite = { version = "=0.30.0", features = ["rustls-tls-webpki-roots"] }
+ureq = { version = "=3.5.0", features = ["json"] }
+rpassword = "=7.5.4"
+qrcode = { version = "=0.14.1", default-features = false }
+dirs = "=7.0.0"
+ctrlc = { version = "=3.5.2", features = ["termination"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "=0.4.7"
