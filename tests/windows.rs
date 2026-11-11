@@ -25,6 +25,27 @@ fn commands_run_in_the_folder_and_nowhere_else() {
     }
     assert_eq!(f.commands, Support::Available, "the sandbox should prove itself here");
     println!("shell: {}", f.shell());
+    if f.shell() != "powershell" {
+        // Why PowerShell didn't work, found out from inside the sandbox with nothing but the language and .NET.
+        f.fence.shell = Some("powershell".into());
+        let diag = r#"
+"version: " + $PSVersionTable.PSVersion
+"language: " + $ExecutionContext.SessionState.LanguageMode
+"PSHOME: " + $PSHOME
+"PSModulePath: " + $env:PSModulePath
+"TEMP: " + $env:TEMP + " LOCALAPPDATA: " + $env:LOCALAPPDATA
+$psd1 = $PSHOME + '\Modules\Microsoft.PowerShell.Management\Microsoft.PowerShell.Management.psd1'
+try { "psd1 bytes: " + [IO.File]::ReadAllBytes($psd1).Length } catch { "psd1 read failed: " + $_.Exception.Message }
+try { "assembly: " + [Reflection.Assembly]::Load('Microsoft.PowerShell.Commands.Management, Version=3.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35').Location } catch { "assembly failed: " + $_.Exception.ToString() }
+try { Import-Module Microsoft.PowerShell.Management -ErrorAction Stop; "import: ok" } catch { "import failed: " + $_.Exception.ToString() }
+try { "after import, Join-Path: " + (Join-Path 'a' 'b') } catch { "still no Join-Path: " + $_.Exception.Message }
+"#;
+        let out = f.handle("exec", &json!({ "command": diag, "timeoutMs": 120000 })).unwrap();
+        for line in out["output"].as_str().unwrap_or("").lines().filter(|l| !l.trim().is_empty()) {
+            println!("check that didn't pass: diagnosis: {}", line.trim());
+        }
+        f.fence.shell = Some("cmd".into());
+    }
     assert_eq!(f.shell(), "powershell", "Windows PowerShell should work in the sandbox (cmd is only the fallback)");
     let run = |command: String| f.handle("exec", &json!({ "command": command, "timeoutMs": 60000 })).unwrap();
     let ps = f.shell() == "powershell";

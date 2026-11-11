@@ -37,7 +37,7 @@ jobs:
         shell: bash
         run: |
           [ -f test-output.txt ] || exit 0
-          { grep -a "check that didn't pass\|^shell:" test-output.txt || true; } | head -20 | while IFS= read -r line; do
+          { grep -a "check that didn't pass\|^shell:" test-output.txt || true; } | head -40 | while IFS= read -r line; do
             line=$(printf '%s' "$line" | tr -d '\r' | cut -c1-3000 | sed 's/%/%25/g')
             echo "::notice title=Sandbox check::$line"
           done
