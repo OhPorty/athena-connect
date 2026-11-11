@@ -20,7 +20,6 @@
 //! folder's own container in), so a big folder is set up once, not every time.
 
 use super::{Fence, Support};
-use base64::Engine;
 use std::ffi::{c_void, OsStr};
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -123,18 +122,23 @@ pub fn run(fence: &Fence, command: &str) -> i32 {
     }
 }
 
-/// The shell's command line for a command.
-fn command_line(shell: &str, command: &str) -> String {
+/// The shell's command line for a command. PowerShell runs it from a script file in the session's temp folder
+/// (returned, to remove afterwards): that gives plain-text errors (an encoded command reports them as XML).
+fn command_line(shell: &str, command: &str, temp: Option<&Path>) -> Result<(String, Option<PathBuf>), String> {
     let system = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
     if shell == "cmd" {
-        format!("\"{system}\\System32\\cmd.exe\" /d /s /c \"{command}\"")
-    } else {
-        // Encoded, so no quoting rules can change what runs; native programs' exit codes come back.
-        let script = format!("$ProgressPreference='SilentlyContinue'\n[Console]::OutputEncoding=[Text.Encoding]::UTF8\n{command}\nif (-not $?) {{ if ($LASTEXITCODE) {{ exit $LASTEXITCODE }} else {{ exit 1 }} }}\nif ($LASTEXITCODE) {{ exit $LASTEXITCODE }}");
-        let bytes: Vec<u8> = script.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
-        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-        format!("\"{system}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {encoded}")
+        return Ok((format!("\"{system}\\System32\\cmd.exe\" /d /s /c \"{command}\""), None));
     }
+    let temp = temp.ok_or("no temp folder for the script")?;
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let script = temp.join(format!("command-{}-{stamp}.ps1", std::process::id()));
+    // Native programs' exit codes come back; UTF-8 with a BOM, which Windows PowerShell needs to read it as UTF-8.
+    let body = format!("$ProgressPreference='SilentlyContinue'\r\ntry {{ [Console]::OutputEncoding=[Text.Encoding]::UTF8 }} catch {{}}\r\n{command}\r\nif (-not $?) {{ if ($LASTEXITCODE) {{ exit $LASTEXITCODE }} else {{ exit 1 }} }}\r\nif ($LASTEXITCODE) {{ exit $LASTEXITCODE }}\r\n");
+    let mut bytes = vec![0xEF, 0xBB, 0xBF];
+    bytes.extend_from_slice(body.as_bytes());
+    std::fs::write(&script, bytes).map_err(|e| format!("couldn't write the command's script: {e}"))?;
+    let line = format!("\"{system}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{}\"", script.display());
+    Ok((line, Some(script)))
 }
 
 unsafe fn run_confined(fence: &Fence, command: &str) -> Result<i32, String> {
@@ -195,7 +199,13 @@ unsafe fn run_confined(fence: &Fence, command: &str) -> Result<i32, String> {
         return Err(last_error("the job's limits"));
     }
 
-    let mut line = wide(command_line(fence.shell.as_deref().unwrap_or("powershell"), command));
+    let (line, script) = command_line(fence.shell.as_deref().unwrap_or("powershell"), command, fence.read_write.get(1).map(|p| p.as_path()))?;
+    let _script = Guard(|| {
+        if let Some(s) = &script {
+            let _ = std::fs::remove_file(s);
+        }
+    });
+    let mut line = wide(line);
     let cwd = wide(folder);
     let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
     if CreateProcessW(null(), line.as_mut_ptr(), null(), null(), 1, EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED, null(), cwd.as_ptr(), &si.StartupInfo, &mut pi) == 0 {

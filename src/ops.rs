@@ -322,6 +322,9 @@ impl Folder {
         cmd.env("TMPDIR", &self.temp).env("TMP", &self.temp).env("TEMP", &self.temp).env("PAGER", "cat").env("GIT_PAGER", "cat").env("TERM", "dumb");
         // Toolchain folders are read only: downloads (cargo, npm, pip) go to the private temp folder.
         cmd.env("CARGO_HOME", self.temp.join("cargo")).env("npm_config_cache", self.temp.join("npm")).env("PIP_CACHE_DIR", self.temp.join("pip"));
+        // Windows PowerShell finds its own modules (one started from PowerShell 7 would otherwise look in 7's, and fail).
+        #[cfg(windows)]
+        cmd.env_remove("PSModulePath");
         // Programs that keep settings in your user folder get private ones instead (Windows).
         #[cfg(windows)]
         for (var, dir) in [("APPDATA", "appdata"), ("LOCALAPPDATA", "localappdata")] {

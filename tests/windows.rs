@@ -25,6 +25,7 @@ fn commands_run_in_the_folder_and_nowhere_else() {
     }
     assert_eq!(f.commands, Support::Available, "the sandbox should prove itself here");
     println!("shell: {}", f.shell());
+    assert_eq!(f.shell(), "powershell", "Windows PowerShell should work in the sandbox (cmd is only the fallback)");
     let run = |command: String| f.handle("exec", &json!({ "command": command, "timeoutMs": 60000 })).unwrap();
     let ps = f.shell() == "powershell";
 
