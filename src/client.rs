@@ -148,7 +148,7 @@ pub fn run(folder: &Path, fresh: bool) -> Result<(), String> {
     let shell = folder.shell().to_string();
 
     let mut socket = connect(&cfg)?;
-    send(&mut socket, json!({ "type": "hello", "info": { "machine": machine_name(), "os": std::env::consts::OS, "shell": shell, "folder": root, "commands": commands, "commandsOff": commands_off, "version": env!("CARGO_PKG_VERSION") }, "fresh": fresh }))?;
+    send(&mut socket, json!({ "type": "hello", "info": { "machine": machine_name(), "os": std::env::consts::OS, "shell": shell, "folder": root, "commands": commands, "commandsOff": commands_off, "version": env!("CARGO_PKG_VERSION"), "installable": if commands { crate::install::installable() } else { vec![] } }, "fresh": fresh }))?;
 
     println!("{TEAL}{BOLD}Athena has access to {root}{RESET}");
     println!("{DIM}Only this folder: anything outside it is refused here, on this computer.{RESET}");

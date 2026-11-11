@@ -27,7 +27,7 @@ fn commands_run_in_the_folder_and_nowhere_else() {
     println!("shell: {}", f.shell());
     if f.shell() != "powershell" {
         // Why PowerShell didn't work, found out from inside the sandbox with nothing but the language and .NET.
-        f.fence.shell = Some("powershell".into());
+        f.set_shell("powershell");
         let diag = r#"
 "version: " + $PSVersionTable.PSVersion
 "language: " + $ExecutionContext.SessionState.LanguageMode
@@ -44,7 +44,7 @@ try { "after import, Join-Path: " + (Join-Path 'a' 'b') } catch { "still no Join
         for line in out["output"].as_str().unwrap_or("").lines().filter(|l| !l.trim().is_empty()) {
             println!("check that didn't pass: diagnosis: {}", line.trim());
         }
-        f.fence.shell = Some("cmd".into());
+        f.set_shell("cmd");
     }
     assert_eq!(f.shell(), "powershell", "Windows PowerShell should work in the sandbox (cmd is only the fallback)");
     let run = |command: String| f.handle("exec", &json!({ "command": command, "timeoutMs": 60000 })).unwrap();

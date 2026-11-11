@@ -94,6 +94,11 @@ pub fn prepare(fence: &mut Fence) -> Result<(), String> {
     imp::prepare(fence)
 }
 
+/// Let commands read toolchains added since `prepare` (Windows opens them to the sandbox; Linux reads the fence).
+pub fn open_toolchains(fence: &Fence) {
+    imp::open_toolchains(fence)
+}
+
 /// Undo what `prepare` set up for the session.
 pub fn release(fence: &Fence) {
     imp::release(fence)
@@ -129,6 +134,8 @@ mod imp {
     }
 
     pub fn release(_fence: &Fence) {}
+
+    pub fn open_toolchains(_fence: &Fence) {}
 
     pub fn run(fence: &Fence, command: &str) -> i32 {
         use std::os::unix::process::CommandExt;
@@ -174,6 +181,7 @@ mod imp {
         Err(NOT_YET.into())
     }
     pub fn release(_fence: &Fence) {}
+    pub fn open_toolchains(_fence: &Fence) {}
     pub fn run(_fence: &Fence, _command: &str) -> i32 {
         eprintln!("athena-connect: {NOT_YET}");
         126

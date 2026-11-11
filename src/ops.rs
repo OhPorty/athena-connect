@@ -24,7 +24,7 @@ pub struct Folder {
     /// Off until `enable_commands` has proven the sandbox on this computer.
     pub commands: Support,
     /// What commands may reach, and the shell they run in.
-    pub fence: Fence,
+    fence: std::sync::RwLock<Fence>,
     prepared: bool,
     /// What each shell's sandbox check printed (for diagnosing why one wasn't used).
     pub probe_log: Vec<String>,
@@ -59,7 +59,7 @@ impl Folder {
             jail,
             temp,
             commands: Support::Unavailable("they haven't been checked yet".into()),
-            fence,
+            fence: std::sync::RwLock::new(fence),
             prepared: false,
             probe_log: Vec::new(),
             helper: std::env::current_exe()?,
@@ -69,8 +69,27 @@ impl Folder {
     }
 
     /// The shell commands run in.
-    pub fn shell(&self) -> &str {
-        self.fence.shell.as_deref().unwrap_or("sh")
+    pub fn shell(&self) -> String {
+        self.fence.read().unwrap().shell.clone().unwrap_or_else(|| "sh".into())
+    }
+
+    /// Which shell commands run in ("powershell" or "cmd" on Windows).
+    pub fn set_shell(&self, shell: &str) {
+        self.fence.write().unwrap().shell = Some(shell.to_string());
+    }
+
+    /// Install a toolchain Athena asked for after the person said yes, then let commands reach it.
+    fn install(&self, args: &Value) -> Result<Value, String> {
+        let id = args.get("toolchain").and_then(Value::as_str).ok_or("install needs a toolchain")?;
+        if !crate::install::installable().contains(&id) {
+            return err(format!("this computer can't install {id} through athena-connect"));
+        }
+        let installed = crate::install::install(id, &self.temp)?;
+        // The new toolchain's folders, readable (not writable) by commands, like the others.
+        let mut fence = self.fence.write().unwrap();
+        fence.read_only = Fence::for_folder(self.jail.root(), &self.temp).read_only;
+        sandbox::open_toolchains(&fence);
+        Ok(json!({ "installed": installed }))
     }
 
     /// Turn commands on, but only once this computer has shown they're confined: the sandbox is set up,
@@ -86,7 +105,7 @@ impl Folder {
         if let Support::Unavailable(why) = sandbox::support() {
             return Err(why);
         }
-        sandbox::prepare(&mut self.fence)?;
+        sandbox::prepare(&mut self.fence.write().unwrap())?;
         self.prepared = true;
         // A file outside the folder (and outside the session's temp folder) that the test command must not read.
         let stamp = std::time::SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
@@ -95,11 +114,11 @@ impl Folder {
             .into_iter()
             .map(|d| d.join(format!("athena-connect-probe-{stamp}.txt")))
             .find(|m| !m.starts_with(self.jail.root()) && !m.starts_with(&self.temp) && m.parent().is_some_and(|p| std::fs::create_dir_all(p).is_ok()) && std::fs::write(m, &secret).is_ok());
-        let shells: Vec<String> = if cfg!(windows) { vec!["powershell".into(), "cmd".into()] } else { vec![self.shell().to_string()] };
+        let shells: Vec<String> = if cfg!(windows) { vec!["powershell".into(), "cmd".into()] } else { vec![self.shell()] };
         let mut last = String::new();
         let mut result = Err(String::new());
         for shell in shells {
-            self.fence.shell = Some(shell.clone());
+            self.set_shell(&shell);
             let out = self.probe(&probe_script(&shell, marker.as_deref()));
             match out {
                 Ok(out) if out.contains(&secret) => {
@@ -168,6 +187,7 @@ impl Folder {
             "exec_start" => self.exec_start(args),
             "exec_output" => self.exec_output(args),
             "exec_kill" => self.exec_kill(args),
+            "install" => self.install(args),
             _ => err(format!("this connector doesn't know how to {op}")),
         }
     }
@@ -318,7 +338,8 @@ impl Folder {
 
     fn build_command(&self, command: &str) -> Result<Command, String> {
         let mut cmd = Command::new(&self.helper);
-        cmd.arg("__run").arg(serde_json::to_string(&self.fence).map_err(|e| e.to_string())?).arg(command);
+        let fence = serde_json::to_string(&*self.fence.read().unwrap()).map_err(|e| e.to_string())?;
+        cmd.arg("__run").arg(fence).arg(command);
         cmd.current_dir(self.jail.root()).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
         cmd.env("TMPDIR", &self.temp).env("TMP", &self.temp).env("TEMP", &self.temp).env("PAGER", "cat").env("GIT_PAGER", "cat").env("TERM", "dumb");
         // Toolchain folders are read only: downloads (cargo, npm, pip) go to the private temp folder.
@@ -440,7 +461,7 @@ impl Folder {
             }
         }
         if self.prepared {
-            sandbox::release(&self.fence);
+            sandbox::release(&self.fence.read().unwrap());
         }
         let _ = std::fs::remove_dir_all(&self.temp);
     }

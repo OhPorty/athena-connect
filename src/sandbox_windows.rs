@@ -118,6 +118,17 @@ unsafe fn map_drive(folder: &Path) -> Result<String, String> {
     Ok(drive)
 }
 
+/// Open toolchain folders (e.g. one just installed) to every container, read and run only.
+pub fn open_toolchains(fence: &Fence) {
+    unsafe {
+        if let Ok(tools) = capability(TOOLS) {
+            for p in &fence.read_only {
+                let _ = grant(p, tools.0, READ_RUN);
+            }
+        }
+    }
+}
+
 /// When the session ends: remove the container's profile (its own storage). The temp folder goes with the session.
 pub fn release(fence: &Fence) {
     unsafe {
@@ -155,10 +166,14 @@ fn command_line(shell: &str, command: &str, folder: &Path, temp: Option<&Path>) 
     // Native programs' exit codes come back; UTF-8 with a BOM, which Windows PowerShell needs to read it as UTF-8.
     // Its core modules are loaded up front: loading them on first use doesn't happen in a container.
     // It starts in the folder's drive (see Fence::drive): anywhere else it checks the folders above, can't see them, and starts in C:\.
-    // The exit code is a failure if anything in the command failed, not only the last part.
+    // The exit code is a failure if anything in the command failed, not only the last part (a program by its exit
+    // code; lines it wrote to its error output don't count).
     let folder = folder.display().to_string().replace('\'', "''");
+    // `a && b` / `a || b`, which Windows PowerShell doesn't know, as conditions it does.
+    let command = crate::shell::for_powershell(command);
+    let prelude = crate::shell::POWERSHELL_PRELUDE;
     let body = format!(
-        "$ProgressPreference='SilentlyContinue'\r\nImport-Module Microsoft.PowerShell.Management, Microsoft.PowerShell.Utility, Microsoft.PowerShell.Security -ErrorAction SilentlyContinue\r\ntry {{ [Console]::OutputEncoding=[Text.Encoding]::UTF8 }} catch {{}}\r\nSet-Location -LiteralPath '{folder}'\r\n$Error.Clear()\r\n$LASTEXITCODE = 0\r\n{command}\r\nif ($LASTEXITCODE) {{ exit $LASTEXITCODE }}\r\nif (-not $? -or $Error.Count) {{ exit 1 }}\r\n"
+        "$ProgressPreference='SilentlyContinue'\r\nImport-Module Microsoft.PowerShell.Management, Microsoft.PowerShell.Utility, Microsoft.PowerShell.Security -ErrorAction SilentlyContinue\r\ntry {{ [Console]::OutputEncoding=[Text.Encoding]::UTF8 }} catch {{}}\r\n{prelude}\r\nSet-Location -LiteralPath '{folder}'\r\n$Error.Clear()\r\n$LASTEXITCODE = 0\r\n{command}\r\nif ($LASTEXITCODE) {{ exit $LASTEXITCODE }}\r\nif (-not (__AthenaOk 0)) {{ exit 1 }}\r\n"
     );
     let mut bytes = vec![0xEF, 0xBB, 0xBF];
     bytes.extend_from_slice(body.as_bytes());
