@@ -33,7 +33,7 @@ fn commands_run_in_the_folder_and_nowhere_else() {
 "language: " + $ExecutionContext.SessionState.LanguageMode
 "PSHOME: " + $PSHOME
 "PSModulePath: " + $env:PSModulePath
-"TEMP: " + $env:TEMP + " LOCALAPPDATA: " + $env:LOCALAPPDATA
+"TEMP: " + $env:TEMP + " exists: " + [IO.Directory]::Exists($env:TEMP) + " LOCALAPPDATA: " + $env:LOCALAPPDATA
 $psd1 = $PSHOME + '\Modules\Microsoft.PowerShell.Management\Microsoft.PowerShell.Management.psd1'
 try { "psd1 bytes: " + [IO.File]::ReadAllBytes($psd1).Length } catch { "psd1 read failed: " + $_.Exception.Message }
 try { "assembly: " + [Reflection.Assembly]::Load('Microsoft.PowerShell.Commands.Management, Version=3.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35').Location } catch { "assembly failed: " + $_.Exception.ToString() }
@@ -51,7 +51,8 @@ try { "after import, Join-Path: " + (Join-Path 'a' 'b') } catch { "still no Join
     let ps = f.shell() == "powershell";
 
     // Inside: normal work, including the private temp folder.
-    let out = run(if ps { "Set-Content -Path made.txt -Value hello; Get-Content made.txt; Set-Content -Path \"$env:TEMP\\t.txt\" -Value scratch; Get-Content \"$env:TEMP\\t.txt\"".into() } else { "echo hello> made.txt & type made.txt & echo scratch> \"%TEMP%\\t.txt\" & type \"%TEMP%\\t.txt\"".into() });
+    let out = run(if ps { "Set-Content -Path made.txt -Value hello; Set-Content -Path (Join-Path $env:TEMP t.txt) -Value ('scr' + 'atch'); Get-Content (Join-Path $env:TEMP t.txt)".into() } else { "echo hello> made.txt & echo scr^atch> \"%TEMP%\\t.txt\" & type \"%TEMP%\\t.txt\"".into() });
+    assert!(out["output"].as_str().unwrap().contains("scratch"), "the temp folder should be writable: {out}");
     assert_eq!(out["code"], 0, "{out}");
     assert_eq!(std::fs::read_to_string(folder.join("made.txt")).unwrap().trim(), "hello", "{out}");
     // Folders made inside are writable too (they inherit the folder's access and label).

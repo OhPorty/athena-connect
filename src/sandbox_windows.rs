@@ -133,7 +133,8 @@ fn command_line(shell: &str, command: &str, temp: Option<&Path>) -> Result<(Stri
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     let script = temp.join(format!("command-{}-{stamp}.ps1", std::process::id()));
     // Native programs' exit codes come back; UTF-8 with a BOM, which Windows PowerShell needs to read it as UTF-8.
-    let body = format!("$ProgressPreference='SilentlyContinue'\r\ntry {{ [Console]::OutputEncoding=[Text.Encoding]::UTF8 }} catch {{}}\r\n{command}\r\nif (-not $?) {{ if ($LASTEXITCODE) {{ exit $LASTEXITCODE }} else {{ exit 1 }} }}\r\nif ($LASTEXITCODE) {{ exit $LASTEXITCODE }}\r\n");
+    // Its core modules are loaded up front: loading them on first use doesn't happen in a container.
+    let body = format!("$ProgressPreference='SilentlyContinue'\r\nImport-Module Microsoft.PowerShell.Management, Microsoft.PowerShell.Utility, Microsoft.PowerShell.Security -ErrorAction SilentlyContinue\r\ntry {{ [Console]::OutputEncoding=[Text.Encoding]::UTF8 }} catch {{}}\r\n{command}\r\nif (-not $?) {{ if ($LASTEXITCODE) {{ exit $LASTEXITCODE }} else {{ exit 1 }} }}\r\nif ($LASTEXITCODE) {{ exit $LASTEXITCODE }}\r\n");
     let mut bytes = vec![0xEF, 0xBB, 0xBF];
     bytes.extend_from_slice(body.as_bytes());
     std::fs::write(&script, bytes).map_err(|e| format!("couldn't write the command's script: {e}"))?;

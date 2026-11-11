@@ -327,12 +327,13 @@ impl Folder {
         // and with every installed module it re-indexes them all for each session (it can't reach its usual index).
         #[cfg(windows)]
         cmd.env("PSModulePath", format!("{}\\System32\\WindowsPowerShell\\v1.0\\Modules", std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into())));
-        // Programs that keep settings in your user folder get private ones instead (Windows).
+        // Programs that keep settings in your user folder get private ones instead (Windows). LOCALAPPDATA, TEMP and
+        // TMP Windows itself points at the container's own folder (removed when the session ends).
         #[cfg(windows)]
-        for (var, dir) in [("APPDATA", "appdata"), ("LOCALAPPDATA", "localappdata")] {
-            let d = self.temp.join(dir);
+        {
+            let d = self.temp.join("appdata");
             let _ = std::fs::create_dir_all(&d);
-            cmd.env(var, d);
+            cmd.env("APPDATA", d);
         }
         if let Some(home) = dirs::home_dir() {
             if home.join(".rustup").exists() {
