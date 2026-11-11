@@ -47,6 +47,7 @@ Athena can't reach anything outside the folder you started `athena-connect` in. 
   - The first time you use a folder, `athena-connect` adds itself to the permissions of that folder and of your toolchain folders. For big folders this can take a minute; after that it's instant. These entries only let that folder's own sandbox in, and they stay so the setup isn't repeated.
   - The folder has to be on an NTFS drive. On FAT or exFAT drives (many USB sticks) and network drives, Windows has no permissions to enforce, so commands stay off there. For the same reason, a command could read a FAT or exFAT USB stick plugged into the computer.
   - Commands can download from the internet (cargo, npm, pip) but can't reach other computers on your local network.
+  - During a session the folder also gets a free drive letter (like `subst`, e.g. `Z:`), which you may see in File Explorer. Commands start there, because PowerShell otherwise looks at the folders above where it starts. The drive letter is removed when the session ends.
 - **Proven before use.** Before turning commands on, `athena-connect` runs a test command in the sandbox that tries to read a file outside the folder. Commands are turned on only if that command runs and the read fails. If this computer can't confine commands, they stay off and Athena can still read, search and edit files.
 - **When you close the terminal**, every command Athena started is stopped and the private temporary folder is removed.
 
