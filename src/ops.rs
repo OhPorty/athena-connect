@@ -111,7 +111,7 @@ impl Folder {
                     break;
                 }
                 Ok(out) => {
-                    self.probe_log.push(format!("{shell}: {out}"));
+                    self.probe_log.push(format!("{shell}: {}", out.trim().replace(['\r', '\n'], " | ")));
                     last = format!("{shell}: {}", out.trim().lines().last().unwrap_or("no output"));
                 }
                 Err(e) => {

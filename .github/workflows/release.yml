@@ -28,7 +28,17 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cargo test --locked 2>&1 | tee test-output.txt
+          cargo test --locked -- --nocapture 2>&1 | tee test-output.txt
+      # Notes from the tests (e.g. why a shell didn't pass the sandbox check), readable without owner access.
+      - name: report notes
+        if: always()
+        shell: bash
+        run: |
+          [ -f test-output.txt ] || exit 0
+          grep -a "check that didn't pass\|^shell:" test-output.txt | head -20 | while IFS= read -r line; do
+            line=$(printf '%s' "$line" | tr -d '\r' | cut -c1-3000 | sed 's/%/%25/g')
+            echo "::notice title=Sandbox check::$line"
+          done
       # Logs are only visible to the repo's owner; a failure note on the run is visible to anyone.
       - name: report failures
         if: failure()
