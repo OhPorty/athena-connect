@@ -138,7 +138,8 @@ impl Folder {
                 Ok(None) if start.elapsed() > Duration::from_secs(60) => {
                     kill_tree(&mut child);
                     let _ = child.wait();
-                    return Err("it didn't finish".into());
+                    let so_far = String::from_utf8_lossy(&output.lock().unwrap()).trim().to_string();
+                    return Err(format!("it didn't finish in a minute (output so far: {})", if so_far.is_empty() { "none" } else { &so_far }));
                 }
                 Ok(None) => std::thread::sleep(Duration::from_millis(20)),
                 Err(e) => return Err(e.to_string()),
