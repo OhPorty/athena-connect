@@ -20,6 +20,9 @@ fn commands_run_in_the_folder_and_nowhere_else() {
     let mut f = Folder::new(&folder).unwrap();
     f.helper = PathBuf::from(env!("CARGO_BIN_EXE_athena-connect"));
     f.enable_commands();
+    for line in &f.probe_log {
+        println!("check that didn't pass: {line}");
+    }
     assert_eq!(f.commands, Support::Available, "the sandbox should prove itself here");
     println!("shell: {}", f.shell());
     let run = |command: String| f.handle("exec", &json!({ "command": command, "timeoutMs": 60000 })).unwrap();
@@ -56,7 +59,7 @@ fn commands_run_in_the_folder_and_nowhere_else() {
     assert!(!escaped.exists());
 
     // A background command stops when the session ends.
-    let started = f.handle("exec_start", &json!({ "command": if ps { "Start-Sleep -Seconds 300" } else { "ping -n 300 127.0.0.1" } })).unwrap();
+    let started = f.handle("exec_start", &json!({ "command": if ps { "Start-Sleep -Seconds 300" } else { "for /l %i in (1,0,2) do @rem" } })).unwrap();
     let job = started["job"].as_str().unwrap().to_string();
     assert_eq!(f.handle("exec_output", &json!({ "job": job })).unwrap()["running"], true);
     let temp = f.temp.clone();

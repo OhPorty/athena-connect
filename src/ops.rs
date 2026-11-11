@@ -26,6 +26,8 @@ pub struct Folder {
     /// What commands may reach, and the shell they run in.
     pub fence: Fence,
     prepared: bool,
+    /// What each shell's sandbox check printed (for diagnosing why one wasn't used).
+    pub probe_log: Vec<String>,
     /// The program that locks a command down before running it: this one (`athena-connect __run`).
     pub helper: PathBuf,
     jobs: Mutex<HashMap<String, Arc<Job>>>,
@@ -59,6 +61,7 @@ impl Folder {
             commands: Support::Unavailable("they haven't been checked yet".into()),
             fence,
             prepared: false,
+            probe_log: Vec::new(),
             helper: std::env::current_exe()?,
             jobs: Mutex::new(HashMap::new()),
             next_job: Mutex::new(1),
@@ -107,8 +110,14 @@ impl Folder {
                     result = Ok(());
                     break;
                 }
-                Ok(out) => last = format!("{shell}: {}", out.trim().lines().last().unwrap_or("no output")),
-                Err(e) => last = format!("{shell}: {e}"),
+                Ok(out) => {
+                    self.probe_log.push(format!("{shell}: {out}"));
+                    last = format!("{shell}: {}", out.trim().lines().last().unwrap_or("no output"));
+                }
+                Err(e) => {
+                    self.probe_log.push(format!("{shell}: {e}"));
+                    last = format!("{shell}: {e}");
+                }
             }
         }
         if let Some(m) = &marker {
